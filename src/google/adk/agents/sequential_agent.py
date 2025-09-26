@@ -24,11 +24,21 @@ from typing_extensions import override
 
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
-from .base_agent import BaseAgentConfig
+from .base_agent import BaseAgentState
+from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
 from .sequential_agent_config import SequentialAgentConfig
+
+
+@experimental
+class SequentialAgentState(BaseAgentState):
+  """State for SequentialAgent."""
+
+  current_sub_agent: str = ''
+  """The name of the current sub-agent to run."""
 
 
 class SequentialAgent(BaseAgent):
@@ -41,10 +51,23 @@ class SequentialAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    # Skip if there is no sub-agent.
+    if not self.sub_agents:
+      return
+
     for sub_agent in self.sub_agents:
+      pause_invocation = False
+
       async with Aclosing(sub_agent.run_async(ctx)) as agen:
         async for event in agen:
           yield event
+          if ctx.should_pause_invocation(event):
+            pause_invocation = True
+
+      # Indicates the invocation should pause when receiving signal from
+      # the current sub_agent.
+      if pause_invocation:
+        return
 
   @override
   async def _run_live_impl(
@@ -61,6 +84,9 @@ class SequentialAgent(BaseAgent):
     Args:
       ctx: The invocation context of the agent.
     """
+    if not self.sub_agents:
+      return
+
     # There is no way to know if it's using live during init phase so we have to init it here
     for sub_agent in self.sub_agents:
       # add tool
